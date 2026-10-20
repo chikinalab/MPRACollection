@@ -15,5 +15,6 @@ This section will help you get started with our project.
 
 ```{eval-rst}
 .. nbgallery::
+   notebooks/cli_tutorial.ipynb
    notebooks/test_load_data.ipynb
 ```

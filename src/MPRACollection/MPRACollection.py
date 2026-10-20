@@ -1,4 +1,6 @@
-"""Main module."""
+"""Main module.
+Defined MPRA_Dataset class that can be used load custom data.
+"""
 
 import yaml
 import pandas as pd
@@ -10,34 +12,34 @@ from torch.utils.data import TensorDataset, DataLoader
 from .utils import data_to_XYobs, XYobs_to_data, mkdir, seqs_to_onehot
 
 __SEED__ = 42
-__PATH__ = "/data/tuxm/project/MPRA-collection/data/mpra_test/"
 
 
 
 class MPRA_Dataset:
 
-    @staticmethod
-    def list_papers(folder=__PATH__):
-        return os.listdir(folder)
+    # @staticmethod
+    # def list_papers(folder):
+    #     # skip hidden entries such as the .cache/ folder made by huggingface
+    #     return sorted(name for name in os.listdir(folder) if not name.startswith('.') and os.path.isdir(os.path.join(folder, name)))
 
-    @staticmethod
-    def list_datasets(name_paper, folder=__PATH__):
-        return [name[:-4] for name in os.listdir(os.path.join(folder, name_paper)) if '.csv' in name]
+    # @staticmethod
+    # def list_datasets(name_paper, folder):
+    #     return sorted(name[:-4] for name in os.listdir(os.path.join(folder, name_paper)) if name.endswith('.csv'))
 
-    @staticmethod
-    def print_all(folder=__PATH__):
-        for name_paper in MPRA_Dataset.list_papers(folder):
-            print(f'==== {name_paper} ====')
-            for name_dataset in MPRA_Dataset.list_datasets(name_paper, folder):
-                print(f'  ==== {name_dataset}')
-        print(f'==== ==== ==== ====')
+    # @staticmethod
+    # def print_all(folder):
+    #     for name_paper in MPRA_Dataset.list_papers(folder):
+    #         print(f'==== {name_paper} ====')
+    #         for name_dataset in MPRA_Dataset.list_datasets(name_paper, folder):
+    #             print(f'  ==== {name_dataset}')
+    #     print(f'==== ==== ==== ====')
 
     def __init__(
         self,
-        folder=__PATH__,
+        folder=None,
         name_paper="",
         name_dataset="",
-        info=dict(),
+        info=None,
         data=pd.DataFrame(),
         X=pd.DataFrame(),
         Y=pd.DataFrame(),
@@ -47,11 +49,11 @@ class MPRA_Dataset:
         names_Z=list(),
         _mpra_dataset=None,
     ):
-        self.info = info
+        self.info = dict() if info is None else info
         if data.shape == (0, 0) and X.shape == (0, 0):
-            raise ValueError(
-                "ONLY ONE of 'data' or 'X' should be provided, but not NEITHER."
-            )
+            # empty dataset, to be filled in later by reload()
+            self.data = pd.DataFrame()
+            self.X, self.Y, self.obs_X, self.obs_Y = data_to_XYobs(self.data)
         elif data.shape == (0, 0):
             self.data = XYobs_to_data(X, Y, obs_X, obs_Y)
             self.X, self.Y, self.obs_X, self.obs_Y = X, Y, obs_X, obs_Y
@@ -149,23 +151,16 @@ class MPRA_Dataset:
         return self.__str__()
 
     # IO-related
-    @staticmethod
-    def load(name_paper: str, name_dataset: str, folder=__PATH__):
+    @classmethod
+    def load(cls, name_paper: str, name_dataset: str, folder):
         """Loads dataset information and data from YAML and CSV files."""
-        try:
-            with open(
-                os.path.join(folder, name_paper, f"{name_dataset}.yaml"), "r"
-            ) as file:
-                info = yaml.safe_load(file)
-            data = pd.read_csv(os.path.join(folder, name_paper, f"{name_dataset}.csv"))
-            return MPRA_Dataset(folder, name_paper, name_dataset, info, data)
-        except FileNotFoundError as e:
-            raise FileNotFoundError(f"Unable to load dataset: {e}")
-        except Exception as e:
-            raise Exception(f"An error occurred while loading the dataset: {e}")
+        mpra_dataset = cls(folder, name_paper, name_dataset)
+        mpra_dataset.reload()
+        return mpra_dataset
 
     def reload(self):
-        """Reloads dataset from source files based on current configuration."""
+        """(Re)loads dataset in place from source files based on current configuration.
+        Also fills in an empty dataset, e.g. MPRA_Dataset(folder, name_paper, name_dataset)."""
         try:
             file_path = os.path.join(self.folder, self.name_paper, self.name_dataset)
             with open(f"{file_path}.yaml", "r") as f:
@@ -173,9 +168,9 @@ class MPRA_Dataset:
             self.data = pd.read_csv(f"{file_path}.csv")
             self.X, self.Y, self.obs_X, self.obs_Y = data_to_XYobs(self.data)
         except FileNotFoundError as e:
-            raise FileNotFoundError(f"Unable to reload dataset: {e}")
+            raise FileNotFoundError(f"Unable to load dataset: {e}")
         except Exception as e:
-            raise Exception(f"An error occurred while reloading the dataset: {e}")
+            raise Exception(f"An error occurred while loading the dataset: {e}")
 
     def save(self):
         """Saves the current dataset state to YAML and CSV files."""
@@ -225,6 +220,7 @@ class MPRA_Dataset:
         cols_Y = [col[3:] if col.startswith("Y: ") else col for col in cols_Y]
 
         # TODO: should not directly delete the rows with missing values without warning
+        # TODO: keep sequence in str and convert to one-hot later in dataset getitem()
         mask = self.Y[cols_Y].notna().all(axis=1)
         len_max = len_max if len_max else self.len_max
         _X = torch.Tensor(

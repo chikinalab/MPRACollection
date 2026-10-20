@@ -21,6 +21,9 @@ dependencies = [
   "typer"
 ]
 
+[project.scripts]
+mdc = "MPRACollection.cli:app"
+
 [project.optional-dependencies]
 dev = [
     "coverage",  # testing
@@ -40,6 +43,11 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
 "*" = ["*.*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "hf: tests that call the real HuggingFace API",
+]
 
 
 

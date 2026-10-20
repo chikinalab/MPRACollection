@@ -1,3 +1,6 @@
+## data
+data/
+
 # Local testing files
 __test-*__.py
 __test-*__.ipynb
