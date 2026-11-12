@@ -1,5 +1,10 @@
-## data
-data/
+CLAUDE.md
+
+## shell scripts
+sh/
+
+## output
+res/
 
 # Local testing files
 __test-*__.py

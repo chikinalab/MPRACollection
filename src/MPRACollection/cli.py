@@ -30,8 +30,8 @@ DATA_DIR_HELP = (
 DATA_DIR_ARGUMENT = typer.Argument(
     None, metavar="[DATA_DIR]", help=DATA_DIR_HELP, show_default=False
 )
-PAPER_HELP = "Name of the paper, e.g. NatureGenetics_2023_Cohen. See `mdc list_dataset`."
-DATASET_HELP = "Name of the dataset in the paper, e.g. state. Needs --paper."
+PAPER_HELP = "Name of the paper, e.g. eLife_2020_King. See `mdc list_dataset`."
+DATASET_HELP = "Name of the dataset in the paper, e.g. MiniSpacer. Needs --paper."
 
 
 def exit_not_found(name: str):
@@ -70,7 +70,7 @@ def download_dataset(
         None, "--dataset", "-d", metavar="DATASET", help=DATASET_HELP
     ),
     download_all: bool = typer.Option(
-        False, "--all", help="Download all datasets of all papers (~27 GB)."
+        False, "--all", help="Download all datasets of all papers (~7.7 GB)."
     ),
     overwrite: bool = typer.Option(
         False, "--overwrite", help="Download again even if the files already exist."

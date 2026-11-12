@@ -6,13 +6,14 @@ import yaml
 import pandas as pd
 import numpy as np
 import os
-import torch
-from torch.utils.data import TensorDataset, DataLoader
 
-from .utils import data_to_XYobs, XYobs_to_data, mkdir, seqs_to_onehot
+from .utils import (
+    STUDY_YAML, data_to_XYobs, XYobs_to_data, format_metadata, mkdir, seqs_to_onehot, strip_prefix,
+)
 
 __SEED__ = 42
 
+TABLE_EXTS = (".csv.gz", ".csv")
 
 
 class MPRA_Dataset:
@@ -48,8 +49,11 @@ class MPRA_Dataset:
         Z=dict(),
         names_Z=list(),
         _mpra_dataset=None,
+        info_study=None,
     ):
+        # info: contents of <name_dataset>.yaml; info_study: contents of study.yaml
         self.info = dict() if info is None else info
+        self.info_study = dict() if info_study is None else info_study
         if data.shape == (0, 0) and X.shape == (0, 0):
             # empty dataset, to be filled in later by reload()
             self.data = pd.DataFrame()
@@ -127,25 +131,18 @@ class MPRA_Dataset:
         return self.n_readout * self.n_seq
 
     def __str__(self) -> str:
-        # Basic dataset information
-        description = f"MPRA_Dataset object with n_seq × n_readout = {self.n_seq} × {self.n_readout}\n"
-
-        # Identifying observable and readout columns, assuming a naming convention is used.
-        obs_seq_columns = [col for col in self.obs_X.columns]
-        obs_readout_columns = [col for col in self.obs_Y.columns]
-        readout_columns = [col for col in self.Y.columns]
-        embed_names = [name for name in self.Z.keys()]
-
-        # Displaying observable and readout columns
-        description += "    obs seq: '" + "', '".join(obs_seq_columns) + "'\n"
-        description += "    obs readout: '" + "', '".join(obs_readout_columns) + "'\n"
-        description += "    readout: '" + "', '".join(readout_columns) + "'\n"
-        description += "    embed: '" + "', '".join(embed_names) + "'\n"
-        # Displaying additional information in info
-        description += "Additional information:\n"
-        for key, value in self.info.items():
-            description += f"    {key}: {value}\n"
-        return description
+        lines = [f"MPRA_Dataset object with n_seq × n_readout = {self.n_seq} × {self.n_readout}"]
+        for label, names in [
+            ("obs seq", self.obs_X.columns),
+            ("obs readout", self.obs_Y.columns),
+            ("readout", self.Y.columns),
+            ("embed", self.Z.keys()),
+        ]:
+            lines.append(f"    {label}: '" + "', '".join(names) + "'")
+        summary = "".join(line + "\n" for line in lines)
+        return summary + format_metadata(
+            self.info, self.info_study, self.folder, self.name_paper, self.name_dataset
+        )
 
     def __repr__(self):
         return self.__str__()
@@ -153,7 +150,7 @@ class MPRA_Dataset:
     # IO-related
     @classmethod
     def load(cls, name_paper: str, name_dataset: str, folder):
-        """Loads dataset information and data from YAML and CSV files."""
+        """Loads dataset information and data from YAML and CSV (.csv.gz or .csv) files."""
         mpra_dataset = cls(folder, name_paper, name_dataset)
         mpra_dataset.reload()
         return mpra_dataset
@@ -161,11 +158,27 @@ class MPRA_Dataset:
     def reload(self):
         """(Re)loads dataset in place from source files based on current configuration.
         Also fills in an empty dataset, e.g. MPRA_Dataset(folder, name_paper, name_dataset)."""
+        folder_paper = os.path.join(self.folder, self.name_paper)
+        file_path = os.path.join(folder_paper, self.name_dataset)
         try:
-            file_path = os.path.join(self.folder, self.name_paper, self.name_dataset)
             with open(f"{file_path}.yaml", "r") as f:
-                self.info = yaml.safe_load(f)
-            self.data = pd.read_csv(f"{file_path}.csv")
+                self.info = yaml.safe_load(f) or dict()
+            file_study = os.path.join(folder_paper, STUDY_YAML)
+            if os.path.exists(file_study):
+                with open(file_study, "r") as f:
+                    self.info_study = yaml.safe_load(f) or dict()
+            else:
+                self.info_study = dict()
+
+            file_table = next(
+                (file_path + ext for ext in TABLE_EXTS if os.path.exists(file_path + ext)), None
+            )
+            if file_table is None:
+                raise FileNotFoundError(
+                    f"No table file found: {file_path}{' or '.join(TABLE_EXTS)}"
+                )
+            # pandas infers the compression from the file extension
+            self.data = pd.read_csv(file_table, low_memory=False)
             self.X, self.Y, self.obs_X, self.obs_Y = data_to_XYobs(self.data)
         except FileNotFoundError as e:
             raise FileNotFoundError(f"Unable to load dataset: {e}")
@@ -173,16 +186,22 @@ class MPRA_Dataset:
             raise Exception(f"An error occurred while loading the dataset: {e}")
 
     def save(self):
-        """Saves the current dataset state to YAML and CSV files."""
+        """Saves the current dataset state to <name_dataset>.csv.gz and <name_dataset>.yaml,
+        and study.yaml if there is study information."""
 
-        mkdir(os.path.join(self.folder, self.name_paper))
-        file = os.path.join(self.folder, self.name_paper, self.name_dataset)
+        folder_paper = os.path.join(self.folder, self.name_paper)
+        mkdir(folder_paper)
+        file = os.path.join(folder_paper, self.name_dataset)
         with open(file + ".yaml", "w") as f:
-            yaml.safe_dump(self.info, f)
-        self.data.to_csv(file + ".csv", index=False)
+            yaml.safe_dump(self.info, f, sort_keys=False, allow_unicode=True)
+        if self.info_study:
+            with open(os.path.join(folder_paper, STUDY_YAML), "w") as f:
+                yaml.safe_dump(self.info_study, f, sort_keys=False, allow_unicode=True)
+        self.data.to_csv(file + ".csv.gz", index=False)
     
     def load_Z(self, names_Z: list):
         """Loads embeddings from files and stores them in the Z attribute."""
+        import torch
 
         if isinstance(names_Z, str):
             names_Z = [names_Z]
@@ -197,6 +216,8 @@ class MPRA_Dataset:
     
     def save_Z(self, names_Z: list):
         """Saves embeddings to files based on the names provided."""
+        import torch
+
         mkdir(os.path.join(self.folder, self.name_paper, self.name_dataset))
         if isinstance(names_Z, str):
             names_Z = [names_Z]
@@ -210,14 +231,16 @@ class MPRA_Dataset:
 
     # PyTorch-related
     def to_Dataset(self, cols_Y: list = [], names_Z: list = [], len_max: int = None):
-        cols_Y = (
-            cols_Y
-            if cols_Y
-            else [col for col in self.data.columns if col.startswith("Y: ")]
-        )
+        import torch
+        from torch.utils.data import TensorDataset
 
-        # FIXME: change the hard-coded "3:" to a more general way
-        cols_Y = [col[3:] if col.startswith("Y: ") else col for col in cols_Y]
+        # default: the table's 'Primary Target Columns', or all readouts if they are not
+        # given or not all present (e.g. after selecting readouts with dataset['name'])
+        if not cols_Y:
+            cols_primary = [strip_prefix(col, "Y: ") for col in self.info.get("Primary Target Columns") or []]
+            cols_Y = cols_primary if cols_primary and set(cols_primary) <= set(self.Y.columns) else list(self.Y.columns)
+        # accept names with or without the "Y: " prefix
+        cols_Y = [strip_prefix(col, "Y: ") for col in cols_Y]
 
         # TODO: should not directly delete the rows with missing values without warning
         # TODO: keep sequence in str and convert to one-hot later in dataset getitem()
@@ -242,6 +265,8 @@ class MPRA_Dataset:
         *args,
         **kwargs,
     ):
+        from torch.utils.data import DataLoader
+
         return DataLoader(
             self.to_Dataset(*args, **kwargs),
             batch_size=batch_size,
@@ -252,6 +277,7 @@ class MPRA_Dataset:
     # TODO: handle setitem
     # TODO: handle str or list of str for index (only apply index on Y, not X or Z)
     def __getitem__(self, index):
+        import torch
 
         if isinstance(index, str) or (isinstance(index, list) and all(isinstance(_index, str) for _index in index)):
             if isinstance(index, str):
@@ -265,8 +291,8 @@ class MPRA_Dataset:
             _obs_Y = self.obs_Y.copy()
             _Z = self.Z.copy()
             return MPRA_Dataset(
-                self.folder, self.name_paper, self.name_dataset, self.info, 
-                X=_X, Y=_Y, obs_X=_obs_X, obs_Y=_obs_Y, Z=_Z, 
+                self.folder, self.name_paper, self.name_dataset, self.info,
+                X=_X, Y=_Y, obs_X=_obs_X, obs_Y=_obs_Y, Z=_Z, info_study=self.info_study,
             )
 
         elif isinstance(index, (int, slice, pd.Series, pd.Index, np.ndarray, torch.Tensor)) \
@@ -311,7 +337,8 @@ class MPRA_Dataset:
                 
             # Create a new MPRA_Dataset with the selected data
             return MPRA_Dataset(
-                self.folder, self.name_paper, self.name_dataset, self.info, data=_data, Z=_Z
+                self.folder, self.name_paper, self.name_dataset, self.info, data=_data, Z=_Z,
+                info_study=self.info_study,
             )
         else:
             raise TypeError(f"Unsupported index type: {type(index).__name__}")

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "MPRACollection"
 version = "0.1.0"
 description = "Python Boilerplate contains all the boilerplate you need to create a Python package."
-readme = "README.rst"
+readme = "README.md"
 authors = [
   {name = "Yilun Sheng", email = "ylsheng@cs.washington.edu"}
 ]

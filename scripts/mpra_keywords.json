@@ -1,0 +1,65 @@
+{
+  "core_terms": [
+    "massively parallel reporter",
+    "STARR-seq",
+    "self-transcribing active regulatory region sequencing",
+    "lentiMPRA",
+    "scMPRA",
+    "sort-seq",
+    "CRE-seq",
+    "regulatory element reporter assay",
+    "random promoters",
+    "massively parallel splicing",
+    "Vex-seq",
+    "fast-UTR",
+    "PTRE-seq"
+  ],
+  "context_groups": {
+    "regulatory": [
+      "enhancer", "enhancers", "promoter", "promoters", "silencer", "silencers",
+      "insulator", "insulators", "cis-regulatory", "regulatory sequence", "regulatory sequences"
+    ],
+    "rna_regulatory": [
+      "UTR", "UTRs", "untranslated region", "untranslated regions",
+      "splicing", "splice site", "splice sites", "exon inclusion",
+      "polyadenylation", "poly(A) site", "poly(A) sites",
+      "translation efficiency", "translational efficiency", "ribosome load", "ribosome loading",
+      "mRNA stability", "mRNA decay", "RNA stability"
+    ],
+    "reporter": ["reporter assay", "reporter assays", "reporter activity", "reporter library", "reporter libraries"],
+    "throughput": ["high-throughput", "high throughput", "pooled", "massively parallel"],
+    "library": ["library", "libraries", "random sequences", "randomized sequences", "synthetic sequences", "mini-genes"],
+    "parallel_readout": ["massively parallel", "polysome profiling", "millions"]
+  },
+  "context_combinations": {
+    "pubmed": [
+      ["regulatory", "reporter", "throughput"],
+      ["regulatory", "library", "parallel_readout"],
+      ["rna_regulatory", "library", "parallel_readout"]
+    ],
+    "gds": [
+      ["regulatory", "reporter", "throughput"],
+      ["rna_regulatory", "library", "parallel_readout"]
+    ]
+  },
+  "matched_term_patterns": [
+    {"label": "MPRA / massively parallel reporter assay", "distinctive": true, "pattern": "(?-i:\\bMPRAs?\\b)|massively parallel reporter"},
+    {"label": "STARR-seq", "distinctive": true, "pattern": "\\bSTARR[- ]seq\\b|self-transcribing active regulatory region"},
+    {"label": "lentiMPRA", "distinctive": true, "pattern": "\\blenti[- ]?MPRAs?\\b"},
+    {"label": "scMPRA", "distinctive": true, "pattern": "\\bscMPRAs?\\b"},
+    {"label": "sort-seq", "distinctive": true, "pattern": "\\bsort[- ]seq\\b"},
+    {"label": "CRE-seq", "distinctive": true, "pattern": "\\bCRE[- ]seq\\b"},
+    {"label": "massively parallel splicing assay", "distinctive": true, "pattern": "massively parallel splicing|\\bVex[- ]seq\\b|(?-i:\\bMaPSy\\b)|(?-i:\\bMFASS\\b)"},
+    {"label": "UTR MPRA (fast-UTR / PTRE-seq)", "distinctive": true, "pattern": "\\bfast[- ]UTR\\b|\\bPTRE[- ]seq\\b"},
+    {"label": "massively parallel translation assay", "distinctive": true, "pattern": "massively parallel translation"},
+    {"label": "enhancer/promoter reporter assay", "pattern": "(enhancers?|promoters?|silencers?|insulators?|regulatory sequences?).{0,100}reporter|reporter.{0,100}(enhancers?|promoters?|silencers?|insulators?|regulatory sequences?)"},
+    {"label": "high-throughput reporter assay", "pattern": "high[- ]throughput.{0,60}reporter|reporter.{0,60}high[- ]throughput|pooled.{0,60}reporter"},
+    {"label": "random/synthetic sequence library", "pattern": "random(ized|ly sampled)? (sequences|librar(y|ies)|promoters|DNA)|synthetic (sequences|librar(y|ies))|mini-?genes|librar(y|ies) of [\\d,.]+\\s*(million|thousand)?"},
+    {"label": "5' UTR", "pattern": "\\b5\\s*['′’]?\\s*-?\\s*(UTRs?|untranslated regions?)\\b"},
+    {"label": "3' UTR", "pattern": "\\b3\\s*['′’]?\\s*-?\\s*(UTRs?|untranslated regions?)\\b"},
+    {"label": "splicing", "pattern": "\\bsplic(ing|e[- ]sites?)\\b|exon (inclusion|skipping)|percent spliced[- ]in"},
+    {"label": "polyadenylation", "pattern": "polyadenylation|poly\\s?\\(A\\) sites?"},
+    {"label": "translation / ribosome load", "pattern": "ribosome load(ing)?|translation(al)? efficiency|polysome profiling"},
+    {"label": "mRNA stability / decay", "pattern": "\\bm?RNA (stability|decay|degradation|half-li(fe|ves))\\b"}
+  ]
+}
