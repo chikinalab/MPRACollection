@@ -14,7 +14,7 @@ from huggingface_hub.errors import EntryNotFoundError
 from rich.console import Console
 from rich.table import Table
 
-from MPRACollection import datasets
+from MPRACollection import resources
 
 app = typer.Typer(
     help="Download and load MPRA datasets from the MPRACollection repo on HuggingFace.",
@@ -50,9 +50,9 @@ def print_downloaded(paths: List[str]):
 @app.command("list_dataset")
 def list_dataset():
     """List all papers and their datasets in the MPRACollection repo."""
-    table = Table("Paper", "Datasets", title=f"HuggingFace: {datasets.DEFAULT_HF_REPO}")
-    for name_paper in datasets.list_papers():
-        table.add_row(name_paper, ", ".join(datasets.list_datasets(name_paper)))
+    table = Table("Paper", "Datasets", title=f"HuggingFace: {resources.DEFAULT_HF_REPO}")
+    for name_paper in resources.list_papers():
+        table.add_row(name_paper, ", ".join(resources.list_datasets(name_paper)))
     console.print(table)
     console.print(
         "Download with: mdc download_dataset [DATA_DIR] -p <paper> [-d <dataset>]", markup=False
@@ -91,15 +91,15 @@ def download_dataset(
 
     if name_dataset is not None:
         try:
-            paths = [datasets.download_dataset(name_paper, name_dataset, data_dir, **kwargs)]
+            paths = [resources.download_dataset(name_paper, name_dataset, data_dir, **kwargs)]
         except EntryNotFoundError:
             exit_not_found(f"Dataset '{name_dataset}' of paper '{name_paper}'")
         print_downloaded(paths)
         return
 
     # all datasets of one paper, or of every paper with --all
-    for name_paper in datasets.list_papers() if download_all else [name_paper]:
-        paths = datasets.download_paper(name_paper, data_dir, **kwargs)
+    for name_paper in resources.list_papers() if download_all else [name_paper]:
+        paths = resources.download_paper(name_paper, data_dir, **kwargs)
         if not paths:
             exit_not_found(f"Paper '{name_paper}'")
         print_downloaded(paths)
@@ -113,7 +113,7 @@ def load_dataset(
 ):
     """Load one dataset (downloading it first if needed) and print a summary."""
     try:
-        mpra_dataset = datasets.load_dataset(name_paper, name_dataset, data_dir)
+        mpra_dataset = resources.load_dataset(name_paper, name_dataset, data_dir)
     except EntryNotFoundError:
         exit_not_found(f"Dataset '{name_dataset}' of paper '{name_paper}'")
 

@@ -1,5 +1,6 @@
 """
-Functions to download MPRA datasets from the MPRACollection repo on HuggingFace.
+Functions to download MPRA datasets (data resources) from the MPRACollection repo on
+HuggingFace. PyTorch datasets for training are in `MPRACollection.data`.
 
 The repo is organized as `<name_paper>/<name_dataset>.csv.gz`,
 `<name_paper>/<name_dataset>.yaml` and `<name_paper>/study.yaml`, the same layout
@@ -115,6 +116,7 @@ def load_dataset(
     name_dataset: str,
     local_dir: Optional[str] = None,
     repo_id: str = DEFAULT_HF_REPO,
+    usecols=None,
 ) -> MPRA_Dataset:
     """
     Download one dataset from HuggingFace (if needed) and load it.
@@ -125,6 +127,7 @@ def load_dataset(
         local_dir: Local folder to save the files into. If None, the files are
             saved in the HuggingFace cache (~/.cache/huggingface/hub by default).
         repo_id: HuggingFace dataset repository ID
+        usecols: columns to read, passed to pandas.read_csv (see MPRA_Dataset.load)
 
     Returns:
         An MPRA_Dataset object
@@ -132,4 +135,4 @@ def load_dataset(
     path = download_dataset(name_paper, name_dataset, local_dir, repo_id)
     # path is <folder>/<name_paper>/<name_dataset>.csv.gz
     folder = Path(path).parents[1]
-    return MPRA_Dataset.load(name_paper, name_dataset, folder)
+    return MPRA_Dataset.load(name_paper, name_dataset, folder, usecols=usecols)

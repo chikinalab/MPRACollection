@@ -1,5 +1,5 @@
 """
-Tests for downloading datasets from HuggingFace (`MPRACollection.datasets`)
+Tests for downloading datasets from HuggingFace (`MPRACollection.resources`)
 and for loading them with `MPRA_Dataset` (`MPRACollection.MPRACollection`).
 
 These tests call the real HuggingFace API. Skip them with `pytest -m "not hf"`.
@@ -11,10 +11,11 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 
-from MPRACollection import datasets
+from MPRACollection import resources
 from MPRACollection import MPRA_Dataset
+from MPRACollection.data import SeqDataset
 
 pytestmark = pytest.mark.hf
 
@@ -27,7 +28,7 @@ DATASET = "state"
 def folder(tmp_path_factory):
     """Download the test dataset once into a temporary folder."""
     local_dir = tmp_path_factory.mktemp("data")
-    datasets.download_dataset(PAPER, DATASET, local_dir=local_dir)
+    resources.download_dataset(PAPER, DATASET, local_dir=local_dir)
     return local_dir
 
 
@@ -36,12 +37,12 @@ def mpra_dataset(folder):
     return MPRA_Dataset.load(PAPER, DATASET, folder)
 
 
-# ==== datasets.py ====
+# ==== resources.py ====
 
 
 def test_list_papers():
     """list_papers() returns the paper folders in the HuggingFace repo."""
-    papers = datasets.list_papers()
+    papers = resources.list_papers()
 
     assert isinstance(papers, list)
     assert PAPER in papers
@@ -50,14 +51,14 @@ def test_list_papers():
 
 def test_list_datasets():
     """list_datasets() returns the dataset names of one paper."""
-    assert datasets.list_datasets(PAPER) == ["cycle", "mixed", "state"]
+    assert resources.list_datasets(PAPER) == ["cycle", "mixed", "state"]
     # APA.csv.backup should not be listed
-    assert datasets.list_datasets("Cell_2019_Seelig") == ["APA"]
+    assert resources.list_datasets("Cell_2019_Seelig") == ["APA"]
 
 
 def test_download_dataset():
     """download_dataset() saves files in the HuggingFace cache by default."""
-    path = datasets.download_dataset(PAPER, DATASET)
+    path = resources.download_dataset(PAPER, DATASET)
 
     assert isinstance(path, str)
     assert path.endswith(f"{PAPER}/{DATASET}.csv")
@@ -67,7 +68,7 @@ def test_download_dataset():
 
 def test_download_dataset_local_dir(tmp_path):
     """download_dataset() saves files in local_dir when it is given."""
-    path = datasets.download_dataset(PAPER, DATASET, local_dir=tmp_path)
+    path = resources.download_dataset(PAPER, DATASET, local_dir=tmp_path)
 
     assert os.path.samefile(path, tmp_path / PAPER / f"{DATASET}.csv")
     assert os.path.exists(tmp_path / PAPER / f"{DATASET}.yaml")
@@ -75,7 +76,7 @@ def test_download_dataset_local_dir(tmp_path):
 
 def test_download_paper(tmp_path):
     """download_paper() downloads every dataset of one paper."""
-    paths = datasets.download_paper(PAPER, local_dir=tmp_path)
+    paths = resources.download_paper(PAPER, local_dir=tmp_path)
 
     assert len(paths) == 3
     assert all(os.path.exists(p) for p in paths)
@@ -83,8 +84,8 @@ def test_download_paper(tmp_path):
 
 def test_load_dataset():
     """load_dataset() loads from the folder that the files were downloaded to."""
-    path = datasets.download_dataset(PAPER, DATASET)
-    mpra_dataset = datasets.load_dataset(PAPER, DATASET)
+    path = resources.download_dataset(PAPER, DATASET)
+    mpra_dataset = resources.load_dataset(PAPER, DATASET)
 
     assert isinstance(mpra_dataset, MPRA_Dataset)
     assert os.path.samefile(mpra_dataset.folder, os.path.dirname(os.path.dirname(path)))
@@ -94,7 +95,7 @@ def test_load_dataset():
 
 def test_load_dataset_local_dir(tmp_path):
     """load_dataset() passes local_dir on to MPRA_Dataset."""
-    mpra_dataset = datasets.load_dataset(PAPER, DATASET, local_dir=tmp_path)
+    mpra_dataset = resources.load_dataset(PAPER, DATASET, local_dir=tmp_path)
 
     assert os.path.samefile(mpra_dataset.folder, tmp_path)
 
@@ -213,27 +214,31 @@ def test_save_and_reload(mpra_dataset, tmp_path):
 
 
 def test_to_Dataset(mpra_dataset):
-    """to_Dataset() returns one-hot sequences of shape (n_seq, 4, len_max)."""
+    """to_Dataset() keeps sequences as strings; rows with missing readouts are dropped."""
+    cols_Y = mpra_dataset.resolve_cols_Y()
+    n_valid = mpra_dataset.mask_valid(cols_Y).sum()
     dataset = mpra_dataset.to_Dataset()
-    X, Y, Z = dataset[:]
+    seq, y, z = dataset[0]
 
-    assert isinstance(dataset, TensorDataset)
-    assert X.shape == (mpra_dataset.n_seq, 4, mpra_dataset.len_max)
-    assert Y.shape == (mpra_dataset.n_seq, mpra_dataset.n_readout)
-    assert Z.shape == (mpra_dataset.n_seq, 0)
+    assert isinstance(dataset, SeqDataset)
+    assert len(dataset) == n_valid
+    assert isinstance(seq, str)
+    assert y.shape == (len(cols_Y),)
+    assert z.shape == (0,)
 
 
 def test_to_Dataset_cols_Y(mpra_dataset):
     dataset = mpra_dataset.to_Dataset(cols_Y=["expr diff"])
-    _, Y, _ = dataset[:]
 
-    assert Y.shape == (mpra_dataset.n_seq, 1)
+    assert dataset.Y.shape == (len(dataset), 1)
 
 
 def test_to_DataLoader(mpra_dataset):
+    """to_DataLoader() one-hot encodes each batch to shape (batch, 4, len_max)."""
     dataloader = mpra_dataset.to_DataLoader(batch_size=8, num_workers=0, shuffle=False)
     X, Y, Z = next(iter(dataloader))
 
     assert isinstance(dataloader, DataLoader)
     assert X.shape == (8, 4, mpra_dataset.len_max)
-    assert Y.shape == (8, mpra_dataset.n_readout)
+    assert Y.shape == (8, len(mpra_dataset.resolve_cols_Y()))
+    assert Z.shape == (8, 0)

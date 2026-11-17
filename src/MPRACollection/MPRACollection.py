@@ -6,9 +6,10 @@ import yaml
 import pandas as pd
 import numpy as np
 import os
+import warnings
 
 from .utils import (
-    STUDY_YAML, data_to_XYobs, XYobs_to_data, format_metadata, mkdir, seqs_to_onehot, strip_prefix,
+    STUDY_YAML, data_to_XYobs, XYobs_to_data, format_metadata, mkdir, strip_prefix,
 )
 
 __SEED__ = 42
@@ -17,23 +18,6 @@ TABLE_EXTS = (".csv.gz", ".csv")
 
 
 class MPRA_Dataset:
-
-    # @staticmethod
-    # def list_papers(folder):
-    #     # skip hidden entries such as the .cache/ folder made by huggingface
-    #     return sorted(name for name in os.listdir(folder) if not name.startswith('.') and os.path.isdir(os.path.join(folder, name)))
-
-    # @staticmethod
-    # def list_datasets(name_paper, folder):
-    #     return sorted(name[:-4] for name in os.listdir(os.path.join(folder, name_paper)) if name.endswith('.csv'))
-
-    # @staticmethod
-    # def print_all(folder):
-    #     for name_paper in MPRA_Dataset.list_papers(folder):
-    #         print(f'==== {name_paper} ====')
-    #         for name_dataset in MPRA_Dataset.list_datasets(name_paper, folder):
-    #             print(f'  ==== {name_dataset}')
-    #     print(f'==== ==== ==== ====')
 
     def __init__(
         self,
@@ -100,7 +84,9 @@ class MPRA_Dataset:
 
     @property
     def len_max(self):
-        return self.X['X'].str.len().max()
+        # int(): with any missing sequence, pandas returns the maximum as a float
+        lengths = self.X['X'].str.len()
+        return int(lengths.max()) if lengths.notna().any() else 0
     
     @property
     def dim_seq(self):
@@ -149,15 +135,20 @@ class MPRA_Dataset:
 
     # IO-related
     @classmethod
-    def load(cls, name_paper: str, name_dataset: str, folder):
-        """Loads dataset information and data from YAML and CSV (.csv.gz or .csv) files."""
+    def load(cls, name_paper: str, name_dataset: str, folder, usecols=None):
+        """Loads dataset information and data from YAML and CSV (.csv.gz or .csv) files.
+
+        usecols: passed to pandas.read_csv to read only some columns, e.g.
+            `lambda col: not col.startswith("obs_")` to skip the obs columns of a large table.
+        """
         mpra_dataset = cls(folder, name_paper, name_dataset)
-        mpra_dataset.reload()
+        mpra_dataset.reload(usecols=usecols)
         return mpra_dataset
 
-    def reload(self):
+    def reload(self, usecols=None):
         """(Re)loads dataset in place from source files based on current configuration.
-        Also fills in an empty dataset, e.g. MPRA_Dataset(folder, name_paper, name_dataset)."""
+        Also fills in an empty dataset, e.g. MPRA_Dataset(folder, name_paper, name_dataset).
+        usecols: passed to pandas.read_csv, see load()."""
         folder_paper = os.path.join(self.folder, self.name_paper)
         file_path = os.path.join(folder_paper, self.name_dataset)
         try:
@@ -177,8 +168,7 @@ class MPRA_Dataset:
                 raise FileNotFoundError(
                     f"No table file found: {file_path}{' or '.join(TABLE_EXTS)}"
                 )
-            # pandas infers the compression from the file extension
-            self.data = pd.read_csv(file_table, low_memory=False)
+            self.data = pd.read_csv(file_table, usecols=usecols, low_memory=False)
             self.X, self.Y, self.obs_X, self.obs_Y = data_to_XYobs(self.data)
         except FileNotFoundError as e:
             raise FileNotFoundError(f"Unable to load dataset: {e}")
@@ -230,48 +220,101 @@ class MPRA_Dataset:
                 raise Exception(f"An error occurred while saving the embeddings: {e}")
 
     # PyTorch-related
-    def to_Dataset(self, cols_Y: list = [], names_Z: list = [], len_max: int = None):
-        import torch
-        from torch.utils.data import TensorDataset
+    def resolve_cols_Y(self, cols_Y=None):
+        """Return readout column names (without the "Y: " prefix).
 
-        # default: the table's 'Primary Target Columns', or all readouts if they are not
-        # given or not all present (e.g. after selecting readouts with dataset['name'])
+        cols_Y may be given with or without the prefix. If it is empty or None, the
+        default is the table's 'Primary Target Columns', or all readouts if those are not
+        given or not all present (e.g. after selecting readouts with dataset['name']).
+        """
         if not cols_Y:
             cols_primary = [strip_prefix(col, "Y: ") for col in self.info.get("Primary Target Columns") or []]
             cols_Y = cols_primary if cols_primary and set(cols_primary) <= set(self.Y.columns) else list(self.Y.columns)
-        # accept names with or without the "Y: " prefix
-        cols_Y = [strip_prefix(col, "Y: ") for col in cols_Y]
+        if isinstance(cols_Y, str):
+            cols_Y = [cols_Y]
+        return [strip_prefix(col, "Y: ") for col in cols_Y]
 
-        # TODO: should not directly delete the rows with missing values without warning
-        # TODO: keep sequence in str and convert to one-hot later in dataset getitem()
-        mask = self.Y[cols_Y].notna().all(axis=1)
-        len_max = len_max if len_max else self.len_max
-        _X = torch.Tensor(
-            seqs_to_onehot(self.X["X"][mask].values, len_max=len_max)
-        ).transpose(1, 2)
-        _Y = torch.Tensor(self.Y[cols_Y][mask].values)
+    def _Y_numeric(self, cols_Y):
+        """Readouts in cols_Y as a float64 array; values that are not numbers become NaN."""
+        return self.Y[cols_Y].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
 
-        _Z = torch.zeros((_X.shape[0], 0))
-        for name in names_Z:
-            _Z = torch.cat((_Z, self.Z[name][mask]), dim=1)
+    def mask_valid(self, cols_Y=None):
+        """Boolean array: True for rows that have a sequence and a finite value in every
+        readout of cols_Y (see resolve_cols_Y for the default)."""
+        cols_Y = self.resolve_cols_Y(cols_Y)
+        has_seq = self.X["X"].notna().to_numpy()
+        return has_seq & np.isfinite(self._Y_numeric(cols_Y)).all(axis=1)
 
-        return TensorDataset(_X, _Y, _Z)
+    def dropna(self, cols_Y=None):
+        """Return a new MPRA_Dataset without the rows that mask_valid(cols_Y) rejects."""
+        return self[self.mask_valid(cols_Y)]
+
+    def to_Dataset(self, cols_Y=None, names_Z=None):
+        """Return a SeqDataset of (sequence string, readouts, embeddings) items.
+
+        Sequences stay strings (uppercased); they are one-hot encoded per batch by the
+        collate function of to_DataLoader(). Rows without a sequence or with a missing or
+        non-finite readout in cols_Y are dropped, with a warning.
+
+        Args:
+            cols_Y: readouts to use as targets (see resolve_cols_Y for the default)
+            names_Z: names of embeddings in self.Z to concatenate as Z
+        """
+        import torch
+        from .data import SeqDataset
+
+        cols_Y = self.resolve_cols_Y(cols_Y)
+        names_Z = [names_Z] if isinstance(names_Z, str) else list(names_Z or [])
+
+        mask = self.mask_valid(cols_Y)
+        if not mask.all():
+            warnings.warn(
+                f"to_Dataset: dropped {(~mask).sum()} of {len(mask)} rows without a sequence "
+                f"or with a missing or non-finite value in {cols_Y}",
+                stacklevel=2,
+            )
+        seqs = self.X["X"][mask].str.upper().tolist()
+        Y = self._Y_numeric(cols_Y)[mask].astype(np.float32)
+        Z = None
+        if names_Z:
+            mask_t = torch.from_numpy(mask)
+            Z = torch.cat([torch.as_tensor(self.Z[name])[mask_t].float() for name in names_Z], dim=1)
+        return SeqDataset(seqs, Y, Z)
 
     def to_DataLoader(
         self,
         batch_size: int,
         num_workers: int = 1,
         shuffle: bool = True,
-        *args,
+        cols_Y=None,
+        names_Z=None,
+        len_max: int = None,
+        collate_fn=None,
         **kwargs,
     ):
-        from torch.utils.data import DataLoader
+        """Return a DataLoader over to_Dataset(cols_Y, names_Z) whose batches are (X, Y, Z),
+        with X one-hot encoded of shape (batch, 4, len_max).
 
+        Args:
+            len_max: length sequences are padded or truncated to (default: self.len_max).
+                Pass the same value for the train, validation and test loaders.
+            collate_fn: replaces the default OneHotCollate(len_max), e.g. to use a different
+                one-hot encoding (see OneHotCollate in MPRACollection.data).
+            **kwargs: passed to torch.utils.data.DataLoader (e.g. drop_last, pin_memory,
+                generator, persistent_workers).
+        """
+        from torch.utils.data import DataLoader
+        from .data import OneHotCollate
+
+        if collate_fn is None:
+            collate_fn = OneHotCollate(len_max or self.len_max)
         return DataLoader(
-            self.to_Dataset(*args, **kwargs),
+            self.to_Dataset(cols_Y, names_Z),
             batch_size=batch_size,
             num_workers=num_workers,
             shuffle=shuffle,
+            collate_fn=collate_fn,
+            **kwargs,
         )
 
     # TODO: handle setitem
@@ -342,38 +385,6 @@ class MPRA_Dataset:
             )
         else:
             raise TypeError(f"Unsupported index type: {type(index).__name__}")
-
-    @property
-    def seq(self):
-        return self.X
-
-    @seq.setter
-    def seq(self, value):
-        self.X = value
-
-    @property
-    def obs_seq(self):
-        return self.obs_X
-
-    @obs_seq.setter
-    def obs_seq(self, value):
-        self.obs_X = value
-
-    @property
-    def readout(self):
-        return self.Y
-
-    @readout.setter
-    def readout(self, value):
-        self.Y = value
-
-    @property
-    def obs_readout(self):
-        return self.obs_Y
-
-    @obs_readout.setter
-    def obs_readout(self, value):
-        self.obs_Y = value
 
     # @property
     # def embed(self):

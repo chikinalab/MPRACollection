@@ -124,7 +124,16 @@ def seqs_to_onehot(
     seqs,
     len_max=64,
     len_div=1,
+    alphabet="ATGC",
+    value_unknown=None,
 ):
+    """One-hot encode sequences to an array of shape (n_seq, len_max, len(alphabet)).
+
+    Sequences are padded on the right with N, or truncated, to len_max (rounded up to a
+    multiple of len_div). Channel i is alphabet[i]. N and X get `value_unknown` in every
+    channel (default 1 / len(alphabet)); any other character gets all zeros.
+    Only uppercase letters are recognized.
+    """
     len_max = (len_max + len_div - 1) // len_div * len_div
 
     # Function to adjust sequence length to len_max
@@ -139,9 +148,9 @@ def seqs_to_onehot(
 
     seqs = [to_len_max(seq) for seq in seqs]
 
-    alphabet = "ATGC"
     alphabet_unknown = "NX"
-    value_unknown = 1.0 / len(alphabet)
+    if value_unknown is None:
+        value_unknown = 1.0 / len(alphabet)
 
     def to_uint8(seq):
         return np.frombuffer(seq.encode("ascii"), dtype=np.uint8)
