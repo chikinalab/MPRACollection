@@ -10,7 +10,9 @@ import pytest
 import torch
 
 from MPRACollection import MPRA_Dataset
-from MPRACollection.data import OneHotCollate, SeqDataset, random_split_indices
+from MPRACollection.data import (
+    OneHotCollate, SeqDataset, find_fold_file, fold_split_indices,
+)
 from MPRACollection.model import build_model
 from MPRACollection.training import compute_metrics, load_config
 
@@ -81,11 +83,59 @@ def test_one_hot_collate_alphagenome_encoding():
     assert Y.tolist() == [[0.0], [1.0]]
 
 
-def test_random_split_indices():
-    idx = random_split_indices(10, (0.7, 0.2, 0.1), seed=0)
+def _write_folds(path, folds):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"sequence": list(folds), "fold": pd.array(list(folds.values()), dtype="Int64")}).to_csv(
+        path, index=False)
 
-    assert [len(i) for i in idx] == [7, 2, 1]
-    assert sorted(np.concatenate(idx).tolist()) == list(range(10))
+
+def test_find_fold_file(tmp_path):
+    assert find_fold_file(str(tmp_path), "P", "D") is None
+    _write_folds(tmp_path / "P" / "union" / "folds_D.csv.gz", {"ACGT": 0})
+    assert find_fold_file(str(tmp_path), "P", "D") == str(tmp_path / "P" / "union" / "folds_D.csv.gz")
+    _write_folds(tmp_path / "P" / "D" / "folds.csv.gz", {"ACGT": 0})  # a table's own folder comes first
+    assert find_fold_file(str(tmp_path), "P", "D") == str(tmp_path / "P" / "D" / "folds.csv.gz")
+
+    # several roots: the first one with a fold file wins
+    _write_folds(tmp_path / "random" / "P" / "D" / "folds.csv.gz", {"ACGT": 1})
+    roots = [str(tmp_path / "graphpart"), str(tmp_path / "random"), str(tmp_path)]
+    assert find_fold_file(roots, "P", "D") == str(tmp_path / "random" / "P" / "D" / "folds.csv.gz")
+    _write_folds(tmp_path / "graphpart" / "P" / "union" / "folds_D.csv.gz", {"ACGT": 2})
+    assert find_fold_file(roots, "P", "D") == str(tmp_path / "graphpart" / "P" / "union" / "folds_D.csv.gz")
+    assert find_fold_file(roots, "P", "E") is None
+
+
+def test_fold_split_indices(tmp_path):
+    path = tmp_path / "folds.csv.gz"
+    _write_folds(path, {"AAAA": 0, "CCCC": 1, "GGGG": 2, "TTTT": 3, "ACGT": 4, "TGCA": None})
+    seqs = ["acgt", "AAAA", "TTTT", "TGCA", "CCCC", "AAAA", "GGGG"]  # duplicate sequences share a fold
+
+    train, val, test = fold_split_indices(seqs, str(path), folds_val=3, folds_test=[4])
+    assert train.tolist() == [1, 4, 5, 6] and val.tolist() == [2] and test.tolist() == [0]  # TGCA: removed
+
+    with pytest.raises(ValueError, match="both"):
+        fold_split_indices(seqs, str(path), folds_val=[3, 4], folds_test=4)
+    with pytest.raises(ValueError, match="1 of 2 sequences are not in"):
+        fold_split_indices(["AAAA", "AAAC"], str(path))
+
+
+def test_prepare_splits(tmp_path, monkeypatch, mpra_dataset, capsys):
+    from MPRACollection import training
+
+    monkeypatch.setattr(training, "load_mpra_dataset", lambda cfg_data: mpra_dataset)
+    cfg_data = {**training.DEFAULT_CONFIG["data"], "name_paper": "P", "name_dataset": "D", "split_folder": str(tmp_path)}
+
+    # no fold file, or no split_folder: error
+    with pytest.raises(FileNotFoundError, match="no fold file for P/D"):
+        training.prepare_splits(cfg_data)
+    with pytest.raises(FileNotFoundError, match="no fold file for P/D"):
+        training.prepare_splits({**cfg_data, "split_folder": None})
+
+    # valid rows of mpra_dataset: ACGT, acgtA, TTAC, CA
+    _write_folds(tmp_path / "P" / "D" / "folds.csv.gz", {"ACGT": 0, "ACGTA": 3, "TTAC": 4, "CA": None})
+    _, splits, _ = training.prepare_splits(cfg_data)
+    assert {k: v.X["X"].tolist() for k, v in splits.items()} == {"train": ["ACGT"], "val": ["acgtA"], "test": ["TTAC"]}
+    assert "1 of 4 rows left out" in capsys.readouterr().out
 
 
 def test_build_model():

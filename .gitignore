@@ -2,6 +2,7 @@ CLAUDE.md
 claude/
 logs/
 configs/
+data/
 
 ## shell scripts
 sh/

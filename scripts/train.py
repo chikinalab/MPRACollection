@@ -28,11 +28,10 @@ import time
 
 import numpy as np
 import torch
-from torch import nn
 
 from MPRACollection.model import build_model
 from MPRACollection.training import (
-    compute_metrics, load_config, make_dataloaders, make_run_dir, predict, prepare_splits, save_config,
+    compute_metrics, fit, load_config, make_dataloaders, make_run_dir, predict, prepare_splits, save_config,
 )
 
 
@@ -69,92 +68,13 @@ def main():
           + ", ".join(f"{k} {len(v)}" for k, v in splits.items())
           + f"; loaded in {time.time() - t0:.1f} s")
 
-    # model and optimization
+    # model, then training with early stopping on the mean validation Pearson r
     model = build_model(cfg["model"]["name"], seq_len=len_max, n_out=len(cols_Y), **cfg["model"]["kwargs"])
     model = model.to(device)
     print(f"{cfg['model']['name']} parameters: {sum(p.numel() for p in model.parameters()):,}")
-    # CyclicLR sets the learning rate at every step, starting from lr_min
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg_train["lr_min"], weight_decay=cfg_train["weight_decay"])
-    scheduler = torch.optim.lr_scheduler.CyclicLR(
-        optimizer, base_lr=cfg_train["lr_min"], max_lr=cfg_train["lr_max"],
-        step_size_up=cfg_train["step_size_up"], mode="triangular", cycle_momentum=False,
-    )
-    loss_fn = nn.MSELoss()
-
-    # readouts whose validation targets are constant have no defined Pearson r, so they are left
-    # out of the mean validation Pearson r (see compute_metrics); if all are, nothing can be selected
-    Y_val = splits["val"].Y[cols_Y].to_numpy(dtype=np.float64)
-    cols_const = [col for j, col in enumerate(cols_Y) if np.ptp(Y_val[:, j]) == 0]
-    if len(cols_const) == len(cols_Y):
-        raise ValueError(f"validation targets are constant for every readout {cols_const}: the Pearson r is "
-                         "undefined, so no checkpoint can be selected")
-    if cols_const:
-        print(f"warning: validation targets are constant for {cols_const}; these readouts are left out of "
-              "the mean validation Pearson r used for checkpoint selection")
-
-    # training with early stopping on the mean validation Pearson r
     best_path = os.path.join(out_dir, "best.pt")
-    history = []
-    best_val, best_step, n_bad, step = -np.inf, 0, 0, 0
-    n_evals, n_evals_undefined, last_undefined = 0, 0, {}
-    train_losses = []
-    stop_reason = "max_epochs"
-    t_train = time.time()
-    model.train()
-    for epoch in range(cfg_train["max_epochs"]):
-        for x, yb, _ in loaders["train"]:
-            x, yb = x.to(device, non_blocking=True), yb.to(device, non_blocking=True)
-            loss = loss_fn(model(x), yb)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            step += 1
-            train_losses.append(loss.item())
-
-            if step % cfg_train["eval_every"] == 0:
-                val = compute_metrics(*predict(model, loaders["val"], device), cols_Y)
-                history.append({
-                    "step": step, "epoch": epoch, "lr": optimizer.param_groups[0]["lr"],
-                    "train_loss": float(np.mean(train_losses)), "val_mse": val["mse"], "val_pearson": val["pearson"],
-                })
-                train_losses = []
-                n_evals += 1
-                if np.isnan(val["pearson"]):  # e.g. non-finite predictions; never selected, counts toward patience
-                    n_evals_undefined += 1
-                    last_undefined = val["undefined_pearson"]
-                    if n_evals_undefined == 1:
-                        print(f"warning: mean validation Pearson r is undefined at step {step}: {last_undefined}",
-                              flush=True)
-                if val["pearson"] > best_val:
-                    best_val, best_step, n_bad = val["pearson"], step, 0
-                    torch.save(model.state_dict(), best_path)
-                else:
-                    n_bad += 1
-                if step % (cfg_train["eval_every"] * 50) == 0:
-                    h = history[-1]
-                    print(f"step {step} epoch {epoch} lr {h['lr']:.2e} train_loss {h['train_loss']:.4f} "
-                          f"val_mse {h['val_mse']:.4f} val_r {h['val_pearson']:.4f} best_r {best_val:.4f}@{best_step}",
-                          flush=True)
-                if n_bad >= cfg_train["patience"]:
-                    stop_reason = "early_stopping"
-                    break
-            if cfg_train["max_steps"] is not None and step >= cfg_train["max_steps"]:
-                stop_reason = "max_steps"
-                break
-        if stop_reason != "max_epochs":
-            break
-    train_seconds = time.time() - t_train
-    print(f"stopped: {stop_reason} at step {step} (epoch {epoch}); best val r {best_val:.4f} at step {best_step}; "
-          f"{train_seconds:.1f} s")
-    if n_evals_undefined:
-        print(f"warning: {n_evals_undefined} of {n_evals} validation evaluations had an undefined mean Pearson r")
-    if best_step == 0:
-        if n_evals == 0:
-            raise RuntimeError(f"no checkpoint was saved: training stopped after {step} steps, "
-                               f"before the first evaluation at step {cfg_train['eval_every']}")
-        raise RuntimeError(f"no checkpoint was saved: all {n_evals} validation evaluations gave an undefined "
-                           f"mean Pearson r; readouts at the last evaluation: {last_undefined}")
+    result = fit(model, loaders, cfg_train, cols_Y, device, best_path)
+    history = result.pop("history")
 
     # evaluation of the best checkpoint on all three splits (the training loader shuffles and
     # drops the last incomplete batch, so the train split gets an unshuffled loader with all rows)
@@ -169,8 +89,7 @@ def main():
         "n_train": len(splits["train"]), "n_val": len(splits["val"]), "n_test": len(splits["test"]),
         "seq_len_max": len_max,
         **{f"test_{k}": v for k, v in test.items()},
-        "best_val_pearson": float(best_val), "best_step": best_step, "steps_run": step,
-        "stop_reason": stop_reason, "train_seconds": train_seconds,
+        **{k: result[k] for k in ("best_val_pearson", "best_step", "steps_run", "stop_reason", "train_seconds")},
     }
     print(json.dumps(metrics, indent=2))
 

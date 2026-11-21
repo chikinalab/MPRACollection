@@ -4,9 +4,16 @@
 `collate_fn`, one-hot encodes them one batch at a time.
 
 The actual datasets used in model training are created through `MPRA_Dataset.to_Dataset()` and `MPRA_Dataset.to_DataLoader()`.
+
+Train/validation/test splits: `find_fold_file` and `fold_split_indices` split rows by
+precomputed sequence folds saved as fold files (GraphPart folds or random folds).
 """
 
+import glob
+import os
+
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
@@ -79,9 +86,74 @@ class OneHotCollate:
         return X, torch.stack(Y), torch.stack(Z)
 
 
-def random_split_indices(n: int, fractions=(0.7, 0.2, 0.1), seed: int = 42):
-    """Randomly split range(n) into train, validation and test index arrays."""
-    perm = np.random.default_rng(seed).permutation(n)
-    n_train = int(round(fractions[0] * n))
-    n_val = int(round(fractions[1] * n))
-    return perm[:n_train], perm[n_train:n_train + n_val], perm[n_train + n_val:]
+# ==== precomputed sequence folds ====
+# A fold file is a CSV with columns 'sequence' and 'fold' (an integer from 0 to 4, or empty for a
+# sequence that is in no fold). Two scripts write them, in the same layout:
+#   scripts/graphpart_fold_split.py  similarity-aware folds; an empty fold marks a sequence that
+#                                    GraphPart removed so that no pair of similar sequences ends up
+#                                    in two different folds
+#   scripts/random_fold_split.py     random folds; no empty folds
+
+
+def find_fold_file(folders, name_paper: str, name_dataset: str):
+    """Path of the fold file of one table, or None if there is none.
+
+    `folders` is a root folder of fold files or a list of them, searched in the given order; the
+    first fold file found is returned (e.g. [GraphPart folds, random folds]: random folds are used
+    only for tables without GraphPart folds). In each root, looks for, in this order:
+      <root>/<name_paper>/<name_dataset>/folds.csv.gz
+          the table was split on its own
+      <root>/<name_paper>/<any subfolder>/folds_<name_dataset>.csv.gz
+          the table was split together with other tables of the same study
+    """
+    for root in [folders] if isinstance(folders, str) else folders:
+        path = os.path.join(root, name_paper, name_dataset, "folds.csv.gz")
+        if os.path.isfile(path):
+            return path
+        pattern = os.path.join(glob.escape(root), glob.escape(name_paper), "*", f"folds_{glob.escape(name_dataset)}.csv.gz")
+        matches = sorted(glob.glob(pattern))
+        if len(matches) > 1:
+            raise ValueError(f"Several fold files for {name_paper}/{name_dataset}: {matches}")
+        if matches:
+            return matches[0]
+    return None
+
+
+def fold_split_indices(seqs, fold_file: str, folds_val=(3,), folds_test=(4,)):
+    """Split rows into train, validation and test index arrays by precomputed sequence folds.
+
+    Each row gets the fold of its sequence in `fold_file`.
+    Rows in folds_val go to validation, rows in folds_test to test, and rows in every
+    other fold to train. Rows whose sequence has an empty fold (removed by GraphPart) are in
+    no split. Rows with the same sequence are always in the same split.
+
+    Args:
+        seqs: sequence string of each row
+        fold_file: CSV with columns 'sequence' and 'fold' (see find_fold_file)
+        folds_val, folds_test: fold numbers (an int or a list of ints) of the validation and test sets
+
+    Returns train, validation and test arrays of row positions, each in increasing order.
+    Raises ValueError if a sequence is missing from the fold file, which means the file was
+    computed from a different version of the table.
+    """
+    folds_val = {int(f) for f in np.atleast_1d(folds_val)}
+    folds_test = {int(f) for f in np.atleast_1d(folds_test)}
+    if folds_val & folds_test:
+        raise ValueError(f"Folds {sorted(folds_val & folds_test)} are in both the validation and the test set")
+
+    table = pd.read_csv(fold_file, dtype={"sequence": str, "fold": "Int64"})
+    if table["sequence"].duplicated().any():
+        raise ValueError(f"{fold_file} lists some sequences more than once")
+    fold_of = table.set_index("sequence")["fold"]
+    seqs = pd.Series(list(seqs), dtype=str).str.upper()
+    missing = ~seqs.isin(fold_of.index)
+    if missing.any():
+        raise ValueError(
+            f"{missing.sum()} of {len(seqs)} sequences are not in {fold_file} (for example "
+            f"{seqs[missing].iloc[0][:50]}...); the fold file was made from a different version of the table"
+        )
+    folds = seqs.map(fold_of).to_numpy(dtype=float, na_value=np.nan)  # NaN: removed by GraphPart
+    in_val = np.isin(folds, list(folds_val))
+    in_test = np.isin(folds, list(folds_test))
+    in_train = ~np.isnan(folds) & ~in_val & ~in_test
+    return np.flatnonzero(in_train), np.flatnonzero(in_val), np.flatnonzero(in_test)
