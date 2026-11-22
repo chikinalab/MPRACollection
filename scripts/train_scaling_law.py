@@ -99,8 +99,9 @@ def read_data_table(path: str, folder: str) -> dict:
         if any(c in table for c in "*?["):
             if not folder:
                 raise ValueError(f"{short}: matching '{table}' needs data.folder")
-            names = sorted(os.path.basename(f)[:-len(".yaml")]
-                           for f in glob.glob(os.path.join(glob.escape(folder), glob.escape(study), "*.yaml")))
+            folders = [folder] if isinstance(folder, str) else folder  # data.folder may be a list
+            names = sorted({os.path.basename(f)[:-len(".yaml")] for root in folders
+                            for f in glob.glob(os.path.join(glob.escape(root), glob.escape(study), "*.yaml"))})
             matches = [n for n in names if n != "study" and fnmatch.fnmatchcase(n, table)]
             if not matches:
                 raise ValueError(f"{short}: no table of {study} matches '{table}' in {folder}")

@@ -8,7 +8,8 @@ DEFAULT_CONFIG:
     name: cuperus                    # default: the file name without extension
     out_dir: /path/to/out_dir        # each run writes to <out_dir>_<YYYYmmdd-HHMMSS>
     data:
-      folder: /path/to/data_folder   # null: download from HuggingFace
+      folder: /path/to/data_folder   # null: download from HuggingFace; a list of folders is
+                                     # searched in order (e.g. [reviewed, mixtures])
       name_paper: GenomeResearch_2017_Cuperus
       name_dataset: random
       cols_Y: null                   # null: the table's 'Primary Target Columns'
@@ -164,13 +165,26 @@ def _is_not_obs(col: str) -> bool:
     return not col.startswith("obs_")
 
 
+def find_table_folder(folders, name_paper: str, name_dataset: str):
+    """The first of `folders` (one folder or a list) that has <name_paper>/<name_dataset>.yaml,
+    or None if none has it."""
+    for folder in [folders] if isinstance(folders, str) else folders:
+        if os.path.isfile(os.path.join(folder, name_paper, f"{name_dataset}.yaml")):
+            return folder
+    return None
+
+
 def load_mpra_dataset(cfg_data: dict) -> MPRA_Dataset:
     """Load the table named in the 'data' section, from data.folder if given, otherwise
-    from HuggingFace (downloaded into the HuggingFace cache)."""
+    from HuggingFace (downloaded into the HuggingFace cache). data.folder may be a list of
+    folders; the table is loaded from the first one that has it."""
     usecols = None if cfg_data["read_obs"] else _is_not_obs
     names = (cfg_data["name_paper"], cfg_data["name_dataset"])
     if cfg_data["folder"]:
-        return MPRA_Dataset.load(*names, cfg_data["folder"], usecols=usecols)
+        folder = find_table_folder(cfg_data["folder"], *names)
+        if folder is None:
+            raise FileNotFoundError(f"no table {names[0]}/{names[1]}.yaml in data.folder = {cfg_data['folder']}")
+        return MPRA_Dataset.load(*names, folder, usecols=usecols)
     from .resources import load_dataset
 
     return load_dataset(*names, usecols=usecols)
